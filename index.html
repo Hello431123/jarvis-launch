@@ -21,7 +21,9 @@
 // and the key that checks addresses are put here (in this browser's storage) by the private server itself,
 // through the address's #fragment, which browsers never send to any server (GitHub's included).
 //   #u=<address>&s=<signature>   open that address, handing over this device's token if it has one
-//   #store=<token>&k=<key>&u=<address>   keep a new token, then open the address
+//   #store=<token>&k=<key>&u=<address>[&n=<topic>]   keep a new token (and the owner's notification channel), then open
+//   (nothing)   a trusted device with a channel looks up the newest address there itself, so a plain bookmark
+//               keeps working after every restart. The address found must still carry the server's signature.
 (function () {
   "use strict";
   var NS = "jarvis-launch:";
@@ -30,7 +32,7 @@
   function get(k) { try { return localStorage.getItem(NS + k) || ""; } catch (_) { return ""; } }
   function set(k, v) { try { localStorage.setItem(NS + k, v); return true; } catch (_) { return false; } }
   document.getElementById("forget").addEventListener("click", function () {
-    try { ["token", "key", "last"].forEach(function (k) { localStorage.removeItem(NS + k); }); } catch (_) {}
+    try { ["token", "key", "last", "topic"].forEach(function (k) { localStorage.removeItem(NS + k); }); } catch (_) {}
     m.textContent = "Forgotten. This device is no longer trusted here.";
   });
   var q = {};
@@ -56,15 +58,45 @@
       location.replace(u + "/#t=" + encodeURIComponent(token));
     });
   }
+  // The newest Jarvis address in the owner's notification channel (ntfy keeps a day of messages; it allows
+  // cross-site reads). Each notice carries the launcher link #u=<address>&s=<signature>; open() checks the
+  // signature against this device's key before handing over anything.
+  function newest() {
+    m.textContent = "Finding Jarvis...";
+    var ctl = window.AbortController ? new AbortController() : null;
+    if (ctl) setTimeout(function () { ctl.abort(); }, 10000);
+    fetch("https://ntfy.sh/" + encodeURIComponent(get("topic")) + "/json?poll=1&since=24h", ctl ? { signal: ctl.signal, cache: "no-store" } : { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.text(); })
+      .then(function (text) {
+        var found = null;
+        text.split(String.fromCharCode(10)).forEach(function (line) {
+          var ev; try { ev = JSON.parse(line); } catch (_) { return; }
+          if (!ev || ev.event !== "message") return;
+          var link = String(ev.click || "") + " " + String(ev.message || "");
+          var mu = /#u=(https:\/\/[a-z0-9-]+\.trycloudflare\.com)&s=([0-9a-f]{64})/.exec(link);
+          if (mu) found = { u: mu[1], s: mu[2] };   // the list is oldest first: the last match is the newest
+        });
+        if (found) open(found.u, found.s);
+        else if (get("last")) open(get("last"), "");
+        else m.textContent = "No recent Jarvis address. Is Jarvis running on the computer?";
+      })
+      .catch(function () {
+        if (get("last")) open(get("last"), "");
+        else m.textContent = "Could not look up Jarvis's address. Open the link from your Jarvis notification.";
+      });
+  }
   if (q.store && q.u) {
     if (!OK.test(q.u) || !/^[0-9a-f]{64}$/.test(q.k || "") || !/^[\w-]{20,200}$/.test(q.store)) { m.textContent = "Not kept: that is not from Jarvis."; return; }
     // once a key is kept, only the same key may replace the token: a link made by someone else cannot swap it out
     if (get("key") && get("key") !== q.k) { m.textContent = "Not kept: that did not come from your Jarvis."; return; }
     if (!set("token", q.store) || !set("key", q.k)) { m.textContent = "This browser will not keep it (private mode?). Use the PIN instead."; return; }
     set("last", q.u);
+    if (/^[A-Za-z0-9_-]{1,64}$/.test(q.n || "")) set("topic", q.n);
     location.replace(q.u + "/");
   } else if (q.u) {
     open(q.u, q.s);
+  } else if (get("topic") && get("key")) {
+    newest();
   } else if (get("last")) {
     open(get("last"), "");
   } else {
