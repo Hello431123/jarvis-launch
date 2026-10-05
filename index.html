@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Launcher</title>
+<style>
+  body { background: #070b12; color: #dbe7f3; font-family: system-ui, sans-serif; padding: 24px; max-width: 420px; margin: auto; }
+  h1 { font-size: 22px; }
+  button { font-size: 16px; padding: 10px 16px; min-height: 44px; }
+</style>
+</head>
+<body>
+<h1>Launcher</h1>
+<p id="m" role="status">Opening...</p>
+<p><button type="button" id="forget">Forget this device</button></p>
+<script>
+// A redirect helper and nothing else. It holds no secret of its own and no address: a trusted device's token
+// and the key that checks addresses are put here (in this browser's storage) by the private server itself,
+// through the address's #fragment, which browsers never send to any server (GitHub's included).
+//   #u=<address>&s=<signature>   open that address, handing over this device's token if it has one
+//   #store=<token>&k=<key>&u=<address>   keep a new token, then open the address
+(function () {
+  "use strict";
+  var NS = "jarvis-launch:";
+  var OK = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/;   // only a quick-tunnel address, never anything else
+  var m = document.getElementById("m");
+  function get(k) { try { return localStorage.getItem(NS + k) || ""; } catch (_) { return ""; } }
+  function set(k, v) { try { localStorage.setItem(NS + k, v); return true; } catch (_) { return false; } }
+  document.getElementById("forget").addEventListener("click", function () {
+    try { ["token", "key", "last"].forEach(function (k) { localStorage.removeItem(NS + k); }); } catch (_) {}
+    m.textContent = "Forgotten. This device is no longer trusted here.";
+  });
+  var q = {};
+  (location.hash.slice(1) || "").split("&").forEach(function (kv) {
+    var i = kv.indexOf("="); if (i > 0) q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1));
+  });
+  if (location.hash) history.replaceState(null, "", location.pathname);   // nothing stays in the address bar
+  function hex(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ("0" + b.toString(16)).slice(-2); }).join(""); }
+  function unhex(h) { var a = new Uint8Array(h.length / 2); for (var i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; }
+  function signed(key, u, s) {   // HMAC-SHA256 of the address with this device's key, as the server makes it
+    if (!/^[0-9a-f]{64}$/.test(key) || !/^[0-9a-f]{64}$/.test(s || "")) return Promise.resolve(false);
+    return crypto.subtle.importKey("raw", unhex(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+      .then(function (k) { return crypto.subtle.sign("HMAC", k, new TextEncoder().encode(u)); })
+      .then(function (sig) { return hex(sig) === s; }, function () { return false; });
+  }
+  function open(u, s) {
+    if (!OK.test(u)) { m.textContent = "That is not a Jarvis address. Nothing was opened."; return; }
+    var token = get("token"), key = get("key");
+    if (!token || !key) { location.replace(u + "/#l=1"); return; }   // not trusted here: nothing to hand over
+    signed(key, u, s).then(function (good) {
+      if (!good && u !== get("last")) { m.textContent = "This link was not made by your Jarvis, so this device's key was not sent."; return; }
+      set("last", u);
+      location.replace(u + "/#t=" + encodeURIComponent(token));
+    });
+  }
+  if (q.store && q.u) {
+    if (!OK.test(q.u) || !/^[0-9a-f]{64}$/.test(q.k || "") || !/^[\w-]{20,200}$/.test(q.store)) { m.textContent = "Not kept: that is not from Jarvis."; return; }
+    // once a key is kept, only the same key may replace the token: a link made by someone else cannot swap it out
+    if (get("key") && get("key") !== q.k) { m.textContent = "Not kept: that did not come from your Jarvis."; return; }
+    if (!set("token", q.store) || !set("key", q.k)) { m.textContent = "This browser will not keep it (private mode?). Use the PIN instead."; return; }
+    set("last", q.u);
+    location.replace(q.u + "/");
+  } else if (q.u) {
+    open(q.u, q.s);
+  } else if (get("last")) {
+    open(get("last"), "");
+  } else {
+    m.textContent = "Open the link from your Jarvis notification.";
+  }
+})();
+</script>
+</body>
+</html>
